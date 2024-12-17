@@ -18,7 +18,7 @@ from sky.adaptors import aws
 from sky.clouds import service_catalog
 from sky.clouds.utils import aws_utils
 from sky.skylet import constants
-from sky.utils import common_utils
+from sky.utils import common_utils, timeline
 from sky.utils import resources_utils
 from sky.utils import rich_utils
 from sky.utils import subprocess_utils
@@ -465,6 +465,7 @@ class AWS(clouds.Cloud):
             **AWS._get_disk_specs(r.disk_tier)
         }
 
+    @timeline.event
     def _get_feasible_launchable_resources(
         self, resources: 'resources_lib.Resources'
     ) -> resources_utils.FeasibleResources:

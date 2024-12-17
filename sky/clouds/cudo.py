@@ -5,7 +5,7 @@ from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 from sky import clouds
 from sky.clouds import service_catalog
-from sky.utils import common_utils
+from sky.utils import common_utils, timeline
 from sky.utils import resources_utils
 
 if typing.TYPE_CHECKING:
@@ -211,6 +211,7 @@ class Cudo(clouds.Cloud):
             'region': region.name,
         }
 
+    @timeline.event
     def _get_feasible_launchable_resources(
         self, resources: 'resources_lib.Resources'
     ) -> 'resources_utils.FeasibleResources':

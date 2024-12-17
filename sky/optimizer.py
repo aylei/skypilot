@@ -1254,6 +1254,7 @@ def _check_specified_clouds(dag: 'dag_lib.Dag') -> None:
                 f'{colorama.Fore.YELLOW}{msg}{colorama.Style.RESET_ALL}')
 
 
+@timeline.event
 def _fill_in_launchable_resources(
     task: task_lib.Task,
     blocked_resources: Optional[Iterable[resources_lib.Resources]],

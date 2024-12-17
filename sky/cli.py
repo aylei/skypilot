@@ -80,6 +80,10 @@ from sky.utils import timeline
 from sky.utils import ux_utils
 from sky.utils.cli_utils import status_utils
 
+import cProfile
+import pstats
+import io
+
 if typing.TYPE_CHECKING:
     from sky.backends import backend as backend_lib
 
@@ -620,7 +624,8 @@ def _launch_with_confirm(
             prompt = f'Restarting the stopped cluster {cluster!r}. Proceed?'
         if prompt is not None:
             confirm_shown = True
-            click.confirm(prompt, default=True, abort=True, show_default=True)
+            raise click.Abort()
+            # click.confirm(prompt, default=True, abort=True, show_default=True)
 
     if not confirm_shown:
         click.secho(f'Running task on cluster {cluster}...', fg='yellow')
@@ -1108,67 +1113,78 @@ def launch(
     In both cases, the commands are run under the task's workdir (if specified)
     and they undergo job queue scheduling.
     """
-    # NOTE(dev): Keep the docstring consistent between the Python API and CLI.
-    env = _merge_env_vars(env_file, env)
-    controller_utils.check_cluster_name_not_controller(
-        cluster, operation_str='Launching tasks on it')
-    if backend_name is None:
-        backend_name = backends.CloudVmRayBackend.NAME
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        # NOTE(dev): Keep the docstring consistent between the Python API and CLI.
+        env = _merge_env_vars(env_file, env)
+        controller_utils.check_cluster_name_not_controller(
+            cluster, operation_str='Launching tasks on it')
+        if backend_name is None:
+            backend_name = backends.CloudVmRayBackend.NAME
 
-    task_or_dag = _make_task_or_dag_from_entrypoint_with_overrides(
-        entrypoint=entrypoint,
-        name=name,
-        workdir=workdir,
-        cloud=cloud,
-        region=region,
-        zone=zone,
-        gpus=gpus,
-        cpus=cpus,
-        memory=memory,
-        instance_type=instance_type,
-        num_nodes=num_nodes,
-        use_spot=use_spot,
-        image_id=image_id,
-        env=env,
-        disk_size=disk_size,
-        disk_tier=disk_tier,
-        ports=ports,
-    )
-    if isinstance(task_or_dag, sky.Dag):
-        raise click.UsageError(
-            _DAG_NOT_SUPPORTED_MESSAGE.format(command='sky launch'))
-    task = task_or_dag
+        task_or_dag = _make_task_or_dag_from_entrypoint_with_overrides(
+            entrypoint=entrypoint,
+            name=name,
+            workdir=workdir,
+            cloud=cloud,
+            region=region,
+            zone=zone,
+            gpus=gpus,
+            cpus=cpus,
+            memory=memory,
+            instance_type=instance_type,
+            num_nodes=num_nodes,
+            use_spot=use_spot,
+            image_id=image_id,
+            env=env,
+            disk_size=disk_size,
+            disk_tier=disk_tier,
+            ports=ports,
+        )
+        if isinstance(task_or_dag, sky.Dag):
+            raise click.UsageError(
+                _DAG_NOT_SUPPORTED_MESSAGE.format(command='sky launch'))
+        task = task_or_dag
 
-    backend: backends.Backend
-    if backend_name == backends.LocalDockerBackend.NAME:
-        backend = backends.LocalDockerBackend()
-    elif backend_name == backends.CloudVmRayBackend.NAME:
-        backend = backends.CloudVmRayBackend()
-    else:
-        with ux_utils.print_exception_no_traceback():
-            raise ValueError(f'{backend_name} backend is not supported.')
+        backend: backends.Backend
+        if backend_name == backends.LocalDockerBackend.NAME:
+            backend = backends.LocalDockerBackend()
+        elif backend_name == backends.CloudVmRayBackend.NAME:
+            backend = backends.CloudVmRayBackend()
+        else:
+            with ux_utils.print_exception_no_traceback():
+                raise ValueError(f'{backend_name} backend is not supported.')
 
-    if task.service is not None:
-        logger.info(
-            f'{colorama.Fore.YELLOW}Service section will be ignored when using '
-            f'`sky launch`. {colorama.Style.RESET_ALL}\n{colorama.Fore.YELLOW}'
-            'To spin up a service, use SkyServe CLI: '
-            f'{colorama.Style.RESET_ALL}{colorama.Style.BRIGHT}sky serve up'
-            f'{colorama.Style.RESET_ALL}')
+        if task.service is not None:
+            logger.info(
+                f'{colorama.Fore.YELLOW}Service section will be ignored when using '
+                f'`sky launch`. {colorama.Style.RESET_ALL}\n{colorama.Fore.YELLOW}'
+                'To spin up a service, use SkyServe CLI: '
+                f'{colorama.Style.RESET_ALL}{colorama.Style.BRIGHT}sky serve up'
+                f'{colorama.Style.RESET_ALL}')
 
-    _launch_with_confirm(task,
-                         backend,
-                         cluster,
-                         dryrun=dryrun,
-                         detach_setup=detach_setup,
-                         detach_run=detach_run,
-                         no_confirm=yes,
-                         idle_minutes_to_autostop=idle_minutes_to_autostop,
-                         down=down,
-                         retry_until_up=retry_until_up,
-                         no_setup=no_setup,
-                         clone_disk_from=clone_disk_from,
-                         fast=fast)
+        _launch_with_confirm(task,
+                            backend,
+                            cluster,
+                            dryrun=dryrun,
+                            detach_setup=detach_setup,
+                            detach_run=detach_run,
+                            no_confirm=yes,
+                            idle_minutes_to_autostop=idle_minutes_to_autostop,
+                            down=down,
+                            retry_until_up=retry_until_up,
+                            no_setup=no_setup,
+                            clone_disk_from=clone_disk_from,
+                            fast=fast)
+    finally:
+        profiler.disable()
+        profiler.dump_stats('profile_stats.prof')
+        s = io.StringIO()
+        ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+        ps.print_stats('sky')
+        with open('profile_stats.txt', 'w') as f:  # Save to file
+            f.write(s.getvalue())
 
 
 @cli.command(cls=_DocumentedCodeCommand)

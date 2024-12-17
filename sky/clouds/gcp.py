@@ -18,7 +18,7 @@ from sky import skypilot_config
 from sky.adaptors import gcp
 from sky.clouds import service_catalog
 from sky.clouds.utils import gcp_utils
-from sky.utils import common_utils
+from sky.utils import common_utils, timeline
 from sky.utils import resources_utils
 from sky.utils import subprocess_utils
 from sky.utils import ux_utils
@@ -557,6 +557,7 @@ class GCP(clouds.Cloud):
 
         return resources_vars
 
+    @timeline.event
     def _get_feasible_launchable_resources(
         self, resources: 'resources.Resources'
     ) -> 'resources_utils.FeasibleResources':

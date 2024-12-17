@@ -14,7 +14,7 @@ from sky.provision import instance_setup
 from sky.provision.kubernetes import network_utils
 from sky.provision.kubernetes import utils as kubernetes_utils
 from sky.skylet import constants
-from sky.utils import common_utils
+from sky.utils import common_utils, timeline
 from sky.utils import resources_utils
 from sky.utils import schemas
 
@@ -511,6 +511,7 @@ class Kubernetes(clouds.Cloud):
 
         return deploy_vars
 
+    @timeline.event
     def _get_feasible_launchable_resources(
         self, resources: 'resources_lib.Resources'
     ) -> 'resources_utils.FeasibleResources':

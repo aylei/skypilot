@@ -17,6 +17,7 @@ import filelock
 from sky.utils import common_utils
 
 _events = []
+_stack_lock = threading.Lock()
 
 
 class Event:
@@ -45,21 +46,26 @@ class Event:
 
     def begin(self):
         event_begin = self._event.copy()
+        self._startTime = time.time()
         event_begin.update({
             'ph': 'B',
-            'ts': f'{time.time() * 10 ** 6: .3f}',
+            'ts': f'{self._startTime * 10 ** 6: .3f}',
         })
-        event_begin['args'] = {'stack': '\n'.join(traceback.format_stack())}
+        with _stack_lock:
+            stack = '\n'.join(traceback.format_stack())
+        event_begin['args'] = {'stack': stack}
         if self._message is not None:
             event_begin['args']['message'] = self._message
         _events.append(event_begin)
 
     def end(self):
         event_end = self._event.copy()
+        endTime = time.time()
         event_end.update({
             'ph': 'E',
-            'ts': f'{time.time() * 10 ** 6: .3f}',
+            'ts': f'{endTime * 10 ** 6: .3f}',
         })
+        event_end['duration'] = endTime - self._startTime
         if self._message is not None:
             event_end['args'] = {'message': self._message}
         _events.append(event_end)

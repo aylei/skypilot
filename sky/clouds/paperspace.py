@@ -8,7 +8,7 @@ import requests
 from sky import clouds
 from sky.clouds import service_catalog
 from sky.provision.paperspace import utils
-from sky.utils import resources_utils
+from sky.utils import resources_utils, timeline
 
 if typing.TYPE_CHECKING:
     from sky import resources as resources_lib
@@ -190,6 +190,7 @@ class Paperspace(clouds.Cloud):
             'region': region.name,
         }
 
+    @timeline.event
     def _get_feasible_launchable_resources(
             self, resources: 'resources_lib.Resources'):
         """Returns a list of feasible resources for the given resources."""
