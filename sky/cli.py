@@ -620,7 +620,8 @@ def _launch_with_confirm(
             prompt = f'Restarting the stopped cluster {cluster!r}. Proceed?'
         if prompt is not None:
             confirm_shown = True
-            click.confirm(prompt, default=True, abort=True, show_default=True)
+            return
+            # click.confirm(prompt, default=True, abort=True, show_default=True)
 
     if not confirm_shown:
         click.secho(f'Running task on cluster {cluster}...', fg='yellow')
@@ -1068,6 +1069,7 @@ def cli():
     help=('[Experimental] If the cluster is already up and available, skip '
           'provisioning and setup steps.'))
 @usage_lib.entrypoint
+@timeline.event
 def launch(
     entrypoint: Tuple[str, ...],
     cluster: Optional[str],

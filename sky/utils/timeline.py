@@ -45,9 +45,10 @@ class Event:
 
     def begin(self):
         event_begin = self._event.copy()
+        self._start_time = time.time()
         event_begin.update({
             'ph': 'B',
-            'ts': f'{time.time() * 10 ** 6: .3f}',
+            'ts': f'{self._start_time * 10 ** 6: .3f}',
         })
         event_begin['args'] = {'stack': '\n'.join(traceback.format_stack())}
         if self._message is not None:
@@ -56,10 +57,12 @@ class Event:
 
     def end(self):
         event_end = self._event.copy()
+        end_time = time.time()
         event_end.update({
             'ph': 'E',
-            'ts': f'{time.time() * 10 ** 6: .3f}',
+            'ts': f'{end_time * 10 ** 6: .3f}',
         })
+        event_end['duration'] = end_time - self._start_time
         if self._message is not None:
             event_end['args'] = {'message': self._message}
         _events.append(event_end)
