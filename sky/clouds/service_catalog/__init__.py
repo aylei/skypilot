@@ -9,7 +9,7 @@ from sky.clouds.service_catalog.constants import ALL_CLOUDS
 from sky.clouds.service_catalog.constants import CATALOG_DIR
 from sky.clouds.service_catalog.constants import CATALOG_SCHEMA_VERSION
 from sky.clouds.service_catalog.constants import HOSTED_CATALOG_DIR_URL
-from sky.utils import resources_utils
+from sky.utils import resources_utils, timeline
 
 if typing.TYPE_CHECKING:
     from sky.clouds import cloud
@@ -53,6 +53,7 @@ def _map_clouds_catalog(clouds: CloudFilter, method_name: str, *args, **kwargs):
 
 
 @fallback_to_default_catalog
+@timeline.event
 def list_accelerators(
     gpus_only: bool = True,
     name_filter: Optional[str] = None,

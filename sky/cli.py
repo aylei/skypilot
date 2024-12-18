@@ -554,6 +554,7 @@ def _parse_override_params(
     return override_params
 
 
+@timeline.event
 def _launch_with_confirm(
     task: sky.Task,
     backend: backends.Backend,

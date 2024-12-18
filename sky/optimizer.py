@@ -238,6 +238,7 @@ class Optimizer:
         return fn(src_cloud, dst_cloud, nbytes)
 
     @staticmethod
+    @timeline.event
     def _estimate_nodes_cost_or_time(
         topo_order: List[task_lib.Task],
         minimize_cost: bool = True,
@@ -991,6 +992,7 @@ class Optimizer:
                     f'To list more details, run: sky show-gpus {acc_name}\n')
 
     @staticmethod
+    @timeline.event
     def _optimize_dag(
         dag: 'dag_lib.Dag',
         minimize_cost: bool = True,

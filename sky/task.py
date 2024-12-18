@@ -20,7 +20,7 @@ from sky.data import storage as storage_lib
 from sky.provision import docker_utils
 from sky.serve import service_spec
 from sky.skylet import constants
-from sky.utils import common_utils
+from sky.utils import common_utils, timeline
 from sky.utils import schemas
 from sky.utils import ux_utils
 
@@ -344,6 +344,7 @@ class Task:
                         f'a symlink to a directory). {self.workdir} not found.')
 
     @staticmethod
+    @timeline.event
     def from_yaml_config(
         config: Dict[str, Any],
         env_overrides: Optional[List[Tuple[str, str]]] = None,

@@ -15,6 +15,7 @@ from sky.clouds import Kubernetes
 from sky.clouds.service_catalog import CloudFilter
 from sky.clouds.service_catalog import common
 from sky.provision.kubernetes import utils as kubernetes_utils
+from sky.utils import timeline
 
 logger = sky_logging.init_logger(__name__)
 
@@ -95,6 +96,7 @@ def list_accelerators_realtime(
                               realtime=True)
 
 
+@timeline.event
 def _list_accelerators(
     gpus_only: bool,
     name_filter: Optional[str],

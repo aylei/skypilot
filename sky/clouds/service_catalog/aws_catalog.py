@@ -163,7 +163,6 @@ def _fetch_and_apply_az_mapping(df: common.LazyDataFrame) -> 'pd.DataFrame':
     return df
 
 
-@timeline.event
 def _get_df() -> 'pd.DataFrame':
     global _user_df
     with _apply_az_mapping_lock:

@@ -86,6 +86,7 @@ class Kubernetes(clouds.Cloud):
         return f'ssh-publickey-{fresh_user_hash}'
 
     @classmethod
+    @timeline.event
     def _unsupported_features_for_resources(
         cls, resources: 'resources_lib.Resources'
     ) -> Dict[clouds.CloudImplementationFeatures, str]:

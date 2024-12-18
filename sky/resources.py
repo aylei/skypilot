@@ -16,7 +16,7 @@ from sky.clouds import service_catalog
 from sky.provision import docker_utils
 from sky.provision.kubernetes import utils as kubernetes_utils
 from sky.skylet import constants
-from sky.utils import accelerator_registry
+from sky.utils import accelerator_registry, timeline
 from sky.utils import common_utils
 from sky.utils import log_utils
 from sky.utils import resources_utils
@@ -542,6 +542,7 @@ class Resources:
                 raise ValueError(
                     f'The "cpus" field should be positive. Found: {memory!r}')
 
+    @timeline.event
     def _set_accelerators(
         self,
         accelerators: Union[None, str, Dict[str, int]],
