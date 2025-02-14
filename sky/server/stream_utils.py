@@ -65,10 +65,8 @@ async def log_streamer(request_id: Optional[str],
                 is_waiting_msg_logged = True
                 # Use smaller padding (1024 bytes) to force browser rendering
                 yield f'{waiting_msg}' + ' ' * 4096 + '\n'
-            # Sleep 0 to yield, so other coroutines can run. This busy waiting
-            # loop is performance critical for short-running requests, so we do
-            # not want to yield too long.
-            await asyncio.sleep(0)
+            # Sleep 0.1 to avoid occupying the CPU.
+            await asyncio.sleep(0.1)
             request_task = requests_lib.get_request(request_id)
             if not follow:
                 break
