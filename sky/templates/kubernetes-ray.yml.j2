@@ -538,10 +538,12 @@ available_node_types:
           # /tmp which cause slowdowns if is not a shared memory volume.
           - mountPath: /dev/shm
             name: dshm
-          {% if k8s_fuse_device_required %}
           securityContext:
             capabilities:
               add:
+                # Allow using debugging tools like strace.
+                - "SYS_PTRACE"
+          {% if k8s_fuse_device_required %}
                 - "SYS_ADMIN"
           {% endif %}
           resources:

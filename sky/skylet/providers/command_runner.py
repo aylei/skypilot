@@ -61,6 +61,8 @@ def docker_start_cmds(
         env_flags,
         user_options_str,
         '--net=host',
+        # SkyPilot: Allow using debugging tools like strace.
+        '--cap-add=SYS_PTRACE',
         # SkyPilot: Add following options to enable fuse.
         '--cap-add=SYS_ADMIN',
         '--device=/dev/fuse',
