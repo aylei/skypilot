@@ -326,6 +326,7 @@ def request_worker(worker: RequestWorker, max_parallel_size: int) -> None:
     try:
         with concurrent.futures.ProcessPoolExecutor(
                 max_workers=max_parallel_size, initializer=executor_initializer, initargs=(sub_title,)) as executor:
+            logger.info(f'AYLEI:executor initialized with max_workers={max_parallel_size}')
             while True:
                 request_element = queue.get()
                 if request_element is None:
@@ -372,7 +373,17 @@ def _get_cpu_count() -> int:
                 raise ValueError(
                     f'Failed to parse the number of CPUs from {cpu_count}'
                 ) from e
-    return psutil.cpu_count()
+    try:
+        # Try to get the cpu limit from cgroup
+        with open("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us", "r") as f:
+            quota = int(f.read().strip())
+        with open("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us", "r") as f:
+            period = int(f.read().strip())
+        if quota > 0 and period > 0:
+            return quota / period
+    except FileNotFoundError:
+        # Fallback to the cpu count of host
+        return psutil.cpu_count()
 
 
 def _get_mem_size_gb() -> float:
@@ -389,7 +400,25 @@ def _get_mem_size_gb() -> float:
             with ux_utils.print_exception_no_traceback():
                 raise ValueError(
                     f'Failed to parse the memory size from {mem_size}') from e
-    return psutil.virtual_memory().total / (1024**3)
+    try:
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "r") as f:
+            limit = int(f.read().strip())
+        if limit > 0 and limit < 9223372036854771712:
+            return psutil.virtual_memory().total
+        return limit
+    except FileNotFoundError:
+        return psutil.virtual_memory().total / (1024**3)
+
+
+def get_memory_limit():
+    try:
+        with open("/sys/fs/cgroup/memory/memory.limit_in_bytes", "r") as f:
+            limit = int(f.read().strip())
+        if limit < 0 or limit >= 9223372036854771712:
+            return psutil.virtual_memory().total  # 回退系统总内存
+        return limit
+    except FileNotFoundError:
+        return psutil.virtual_memory().total
 
 
 def start(deploy: bool) -> List[multiprocessing.Process]:
@@ -464,7 +493,9 @@ def _max_parallel_size_for_blocking(cpu_count: int, mem_size_gb: float) -> int:
 def _max_parallel_size_for_non_blocking(mem_size_gb: float,
                                         parallel_size_for_blocking: int) -> int:
     """Max parallelism for non-blocking requests."""
+    logger.info(f'AYLEI:mem_size_gb={mem_size_gb}, parallel_size_for_blocking={parallel_size_for_blocking}')
     available_mem = mem_size_gb - (parallel_size_for_blocking *
                                    _PER_BLOCKING_REQUEST_MEM_GB)
+    logger.info(f'AYLEI:available_mem={available_mem}')
     n = max(1, int(available_mem / _PER_NON_BLOCKING_REQUEST_MEM_GB))
     return n

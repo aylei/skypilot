@@ -54,10 +54,11 @@ else:
 
 P = ParamSpec('P')
 
-
 def _add_timestamp_prefix_for_server_logs() -> None:
     server_logger = sky_logging.init_logger('sky.server')
-    # Disable propagation to avoid the root logger of SkyPilot being affected.
+    # Clear existing handlers first to prevent duplicates
+    server_logger.handlers.clear()
+    # Disable propagation to avoid the root logger of SkyPilot being affected
     server_logger.propagate = False
     # Add date prefix to the log message printed by loggers under
     # server.
@@ -70,6 +71,8 @@ def _add_timestamp_prefix_for_server_logs() -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
         uvicorn_logger.addHandler(stream_handler)
+        # Also disable propagation for uvicorn loggers
+        uvicorn_logger.propagate = False
 
 
 _add_timestamp_prefix_for_server_logs()
@@ -504,7 +507,7 @@ async def status(
     status_body: payloads.StatusBody = payloads.StatusBody()
 ) -> None:
     """Gets cluster statuses."""
-    logger.info(f'AYLEI:accept request {request.state.request_id} with name status')
+    logger.info(f'AYLEI:accept request {request.state.request_id} with name status [pid={os.getpid()}]')
     executor.schedule_request(
         request_id=request.state.request_id,
         request_name='status',
