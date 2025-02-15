@@ -504,6 +504,7 @@ async def status(
     status_body: payloads.StatusBody = payloads.StatusBody()
 ) -> None:
     """Gets cluster statuses."""
+    logger.info(f'AYLEI:accept request {request.state.request_id} with name status')
     executor.schedule_request(
         request_id=request.state.request_id,
         request_name='status',
@@ -794,10 +795,7 @@ async def api_get(request_id: str) -> requests_lib.RequestPayload:
                                             detail=dataclasses.asdict(
                                                 request_task.encode()))
             return request_task.encode()
-        # Sleep 0 to yield, so other coroutines can run. This busy waiting
-        # loop is performance critical for short-running requests, so we do
-        # not want to yield too long.
-        await asyncio.sleep(0)
+        await common_utils.quick_yield()
 
 
 @app.get('/api/stream')

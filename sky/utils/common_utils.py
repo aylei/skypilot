@@ -1,5 +1,6 @@
 """Utils shared between all of sky"""
 
+import asyncio
 import difflib
 import functools
 import getpass
@@ -755,3 +756,12 @@ def is_port_available(port: int, reuse_addr: bool = True) -> bool:
             return True
         except OSError:
             return False
+
+async def quick_yield():
+    """Yield control to allow other coroutines to run.
+
+    Used in performance-critical busy waiting loops, The sleep duration is kept
+    minimal to maintain responsiveness for performance-critical tasks, while
+    still allow other coroutines to make progress and avoid occupying the CPU.
+    """
+    await asyncio.sleep(0.1)

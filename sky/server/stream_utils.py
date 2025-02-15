@@ -10,7 +10,7 @@ import fastapi
 
 from sky import sky_logging
 from sky.server.requests import requests as requests_lib
-from sky.utils import message_utils
+from sky.utils import common_utils, message_utils
 from sky.utils import rich_utils
 
 logger = sky_logging.init_logger(__name__)
@@ -65,8 +65,7 @@ async def log_streamer(request_id: Optional[str],
                 is_waiting_msg_logged = True
                 # Use smaller padding (1024 bytes) to force browser rendering
                 yield f'{waiting_msg}' + ' ' * 4096 + '\n'
-            # Sleep 0.1 to avoid occupying the CPU.
-            await asyncio.sleep(0.1)
+            await common_utils.quick_yield()
             request_task = requests_lib.get_request(request_id)
             if not follow:
                 break
@@ -99,23 +98,17 @@ async def log_streamer(request_id: Optional[str],
                 if not follow:
                     break
 
-                # Sleep 0 to yield, so other coroutines can run. This busy
-                # waiting loop is performance critical for short-running
-                # requests, so we do not want to yield too long.
-                await asyncio.sleep(0)
+                await common_utils.quick_yield()
                 continue
             line_str = line.decode('utf-8')
             if plain_logs:
                 is_payload, line_str = message_utils.decode_payload(
                     line_str, raise_for_mismatch=False)
                 if is_payload:
-                    # Sleep 0 to yield, so other coroutines can run. This busy
-                    # waiting loop is performance critical for short-running
-                    # requests, so we do not want to yield too long.
-                    await asyncio.sleep(0)
+                    await common_utils.quick_yield()
                     continue
             yield line_str
-            await asyncio.sleep(0)  # Allow other tasks to run
+            await common_utils.quick_yield()
 
 
 def stream_response(

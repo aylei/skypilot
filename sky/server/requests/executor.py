@@ -279,6 +279,7 @@ def schedule_request(request_id: str,
         user_id = server_constants.SKYPILOT_SYSTEM_USER_ID
         global_user_state.add_or_update_user(
             models.User(id=user_id, name=user_id))
+    logger.info(f'AYLEI:Scheduling request {request_id} with name {request_name}')
     request = api_requests.Request(request_id=request_id,
                                    name=server_constants.REQUEST_NAME_PREFIX +
                                    request_name,
@@ -291,7 +292,7 @@ def schedule_request(request_id: str,
                                    cluster_name=request_cluster_name)
 
     if not api_requests.create_if_not_exists(request):
-        logger.debug(f'Request {request_id} already exists.')
+        logger.info(f'AYLEI:Request {request_id} already exists.')
         return
 
     request.log_path.touch()
@@ -300,6 +301,8 @@ def schedule_request(request_id: str,
     logger.info(f'Queuing request: {request_id}')
     _get_queue(schedule_type).put(input_tuple)
 
+def executor_initializer(sub_title: str):
+    setproctitle.setproctitle(f'{sub_title}:{multiprocessing.current_process().pid}')
 
 def request_worker(worker: RequestWorker, max_parallel_size: int) -> None:
     """Worker for the requests.
@@ -312,41 +315,46 @@ def request_worker(worker: RequestWorker, max_parallel_size: int) -> None:
     setproctitle.setproctitle(
         f'SkyPilot:worker:{worker.schedule_type.value}-{worker.id}')
     queue = _get_queue(worker.schedule_type)
+
+    sub_title = f'SkyPilot:executor:{worker.schedule_type.value}-{worker.id}'
     # Use concurrent.futures.ProcessPoolExecutor instead of multiprocessing.Pool
     # because the former is more efficient with the support of lazy creation of
     # worker processes.
     # We use executor instead of individual multiprocessing.Process to avoid
     # the overhead of forking a new process for each request, which can be about
     # 1s delay.
-    with concurrent.futures.ProcessPoolExecutor(
-            max_workers=max_parallel_size) as executor:
-        while True:
-            request_element = queue.get()
-            if request_element is None:
-                time.sleep(0.1)
-                continue
-            request_id, ignore_return_value = request_element
-            request = api_requests.get_request(request_id)
-            if request.status == api_requests.RequestStatus.CANCELLED:
-                continue
-            logger.info(f'[{worker}] Submitting request: {request_id}')
-            # Start additional process to run the request, so that it can be
-            # cancelled when requested by a user.
-            # TODO(zhwu): since the executor is reusing the request process,
-            # multiple requests can share the same process pid, which may cause
-            # issues with SkyPilot core functions if they rely on the exit of
-            # the process, such as subprocess_daemon.py.
-            future = executor.submit(_request_execution_wrapper, request_id,
-                                     ignore_return_value)
+    try:
+        with concurrent.futures.ProcessPoolExecutor(
+                max_workers=max_parallel_size, initializer=executor_initializer, initargs=(sub_title,)) as executor:
+            while True:
+                request_element = queue.get()
+                if request_element is None:
+                    time.sleep(0.1)
+                    continue
+                request_id, ignore_return_value = request_element
+                request = api_requests.get_request(request_id)
+                if request.status == api_requests.RequestStatus.CANCELLED:
+                    continue
+                logger.info(f'[{worker}] Submitting request: {request_id}')
+                # Start additional process to run the request, so that it can be
+                # cancelled when requested by a user.
+                # TODO(zhwu): since the executor is reusing the request process,
+                # multiple requests can share the same process pid, which may cause
+                # issues with SkyPilot core functions if they rely on the exit of
+                # the process, such as subprocess_daemon.py.
+                future = executor.submit(_request_execution_wrapper, request_id,
+                                        ignore_return_value)
 
-            if worker.schedule_type == api_requests.ScheduleType.LONG:
-                try:
-                    future.result(timeout=None)
-                except Exception as e:  # pylint: disable=broad-except
-                    logger.error(f'[{worker}] Request {request_id} failed: {e}')
-                logger.info(f'[{worker}] Finished request: {request_id}')
-            else:
-                logger.info(f'[{worker}] Submitted request: {request_id}')
+                if worker.schedule_type == api_requests.ScheduleType.LONG:
+                    try:
+                        future.result(timeout=None)
+                    except Exception as e:  # pylint: disable=broad-except
+                        logger.error(f'[{worker}] Request {request_id} failed: {e}')
+                    logger.info(f'[{worker}] Finished request: {request_id}')
+                else:
+                    logger.info(f'[{worker}] Submitted request: {request_id}')
+    except Exception as e:
+        logger.error(f'[{worker}] Exiting: {e}')
 
 
 def _get_cpu_count() -> int:
