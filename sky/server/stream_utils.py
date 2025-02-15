@@ -105,10 +105,10 @@ async def log_streamer(request_id: Optional[str],
                 is_payload, line_str = message_utils.decode_payload(
                     line_str, raise_for_mismatch=False)
                 if is_payload:
-                    await common_utils.quick_yield()
+                    await asyncio.sleep(0)
                     continue
             yield line_str
-            await common_utils.quick_yield()
+            await asyncio.sleep(0)
 
 
 def stream_response(
