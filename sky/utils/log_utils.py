@@ -5,9 +5,6 @@ import types
 from typing import Callable, Iterator, List, Optional, TextIO, Type
 
 import colorama
-# slow due to https://github.com/python-pendulum/pendulum/issues/808
-# FIXME(aylei): bump pendulum if it get fixed
-import pendulum
 import prettytable
 
 from sky import sky_logging
@@ -299,8 +296,8 @@ def create_table(field_names: List[str], **kwargs) -> prettytable.PrettyTable:
 
 
 def readable_time_duration(start: Optional[float],
-                           end: Optional[float] = None,
-                           absolute: bool = False) -> str:
+                         end: Optional[float] = None,
+                         absolute: bool = False) -> str:
     """Human readable time duration from timestamps.
 
     Args:
@@ -319,36 +316,46 @@ def readable_time_duration(start: Optional[float],
         return '-'
     if end == start == 0:
         return '-'
-    if end is not None:
-        end = pendulum.from_timestamp(end)
-    start_time = pendulum.from_timestamp(start)
-    duration = start_time.diff(end)
+    
+    if end is None:
+        end = time.time()
+    
+    duration_secs = abs(end - start)
+    
+    if duration_secs < 1:
+        return '< 1 second'
+    
     if absolute:
-        diff = start_time.diff(end).in_words()
-        if duration.in_seconds() < 1:
-            diff = '< 1 second'
-        diff = diff.replace(' seconds', 's')
-        diff = diff.replace(' second', 's')
-        diff = diff.replace(' minutes', 'm')
-        diff = diff.replace(' minute', 'm')
-        diff = diff.replace(' hours', 'h')
-        diff = diff.replace(' hour', 'h')
-        diff = diff.replace(' days', 'd')
-        diff = diff.replace(' day', 'd')
-        diff = diff.replace(' weeks', 'w')
-        diff = diff.replace(' week', 'w')
-        diff = diff.replace(' months', 'mo')
-        diff = diff.replace(' month', 'mo')
+        # Calculate components
+        days, remainder = divmod(int(duration_secs), 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        
+        # Build duration string
+        parts = []
+        if days > 0:
+            parts.append(f'{days}d')
+        if hours > 0:
+            parts.append(f'{hours}h')
+        if minutes > 0:
+            parts.append(f'{minutes}m')
+        if seconds > 0 or not parts:  # Include seconds if it's the only component
+            parts.append(f'{seconds}s')
+        
+        return ' '.join(parts)
     else:
-        diff = start_time.diff_for_humans(end)
-        if duration.in_seconds() < 1:
-            diff = '< 1 second'
-        diff = diff.replace('second', 'sec')
-        diff = diff.replace('minute', 'min')
-        diff = diff.replace('hour', 'hr')
-
-    return diff
-
+        # Simplified human-readable format
+        if duration_secs < 60:
+            return f'{int(duration_secs)} sec ago'
+        elif duration_secs < 3600:
+            mins = int(duration_secs / 60)
+            return f'{mins} min ago'
+        elif duration_secs < 86400:
+            hours = int(duration_secs / 3600)
+            return f'{hours} hr ago'
+        else:
+            days = int(duration_secs / 86400)
+            return f'{days} days ago'
 
 def follow_logs(
     file: TextIO,
