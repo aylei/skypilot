@@ -8,6 +8,8 @@ from datetime import datetime
 
 import psutil
 
+_CGROUP_MEMORY_STAT_FILE = '/sys/fs/cgroup/memory.stat'
+
 
 def get_size_gb(bytes):
     """
@@ -16,12 +18,29 @@ def get_size_gb(bytes):
     return bytes / (1024**3)
 
 
+def read_cgroup_memory_stat():
+    """
+    Read and parse the cgroup memory statistics file
+    """
+    stats = {}
+    try:
+        with open(_CGROUP_MEMORY_STAT_FILE, 'r') as f:
+            for line in f:
+                category, value = line.strip().split()
+                stats[category] = int(value)
+    except FileNotFoundError:
+        print(f"Warning: {_CGROUP_MEMORY_STAT_FILE} not found")
+        return None
+    return stats
+
+
 def monitor_system():
     # Initialize peak tracking variables
     interval = 0.2
     peak_cpu = 0
     peak_memory_percent = 0
     peak_memory_used = 0
+    peak_cgroup_stats = {}
     start_time = datetime.now()
     samples = 0
     total_cpu = 0
@@ -32,6 +51,7 @@ def monitor_system():
     baseline_memory = psutil.virtual_memory()
     baseline_memory_used = get_size_gb(baseline_memory.used)
     baseline_memory_percent = baseline_memory.percent
+    baseline_cgroup_stats = read_cgroup_memory_stat()
 
     try:
         while True:
@@ -60,7 +80,14 @@ def monitor_system():
                 f"Memory Usage: {memory_used}/{memory_total} ({memory_percent}%)"
             )
 
-            samples += 1
+            if baseline_cgroup_stats:
+                current_cgroup_stats = read_cgroup_memory_stat()
+                if current_cgroup_stats:
+                    for category, value in current_cgroup_stats.items():
+                        peak_cgroup_stats[category] = max(
+                            peak_cgroup_stats.get(category, 0), value)
+                    
+                samples += 1
 
     except KeyboardInterrupt:
         # Calculate monitoring duration
@@ -83,6 +110,12 @@ def monitor_system():
         print(
             f"Baseline Memory: {baseline_memory_used:.2f}GB ({baseline_memory_percent}%)"
         )
+        
+        if baseline_cgroup_stats:
+            print("\nBASELINE CGROUP MEMORY STATS:")
+            for category, value in baseline_cgroup_stats.items():
+                print(f"{category}: {get_size_gb(value):.3f}GB")
+
         print("\nPEAK USAGE:")
         print(f"Peak CPU: {peak_cpu}%")
         print(
@@ -91,6 +124,18 @@ def monitor_system():
         print(
             f"Memory Delta: {get_size_gb(peak_memory_used - baseline_memory.used):.1f}GB"
         )
+
+        if baseline_cgroup_stats and peak_cgroup_stats:
+            print("\nCGROUP MEMORY STATS DELTA:")
+            for category in baseline_cgroup_stats:
+                baseline = baseline_cgroup_stats.get(category, 0)
+                peak = peak_cgroup_stats.get(category, 0)
+                delta = peak - baseline
+                print(f"{category}:")
+                print(f"  Baseline: {get_size_gb(baseline):.3f}GB")
+                print(f"  Peak: {get_size_gb(peak):.3f}GB")
+                print(f"  Delta: {get_size_gb(delta):.3f}GB")
+
         print("\nAVERAGE USAGE:")
         print(f"Average CPU: {avg_cpu:.1f}%")
         print(f"Average Memory: {avg_memory:.1f}%")
