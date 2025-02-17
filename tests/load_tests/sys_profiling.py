@@ -110,11 +110,6 @@ def monitor_system():
         print(
             f"Baseline Memory: {baseline_memory_used:.2f}GB ({baseline_memory_percent}%)"
         )
-        
-        if baseline_cgroup_stats:
-            print("\nBASELINE CGROUP MEMORY STATS:")
-            for category, value in baseline_cgroup_stats.items():
-                print(f"{category}: {get_size_gb(value):.3f}GB")
 
         print("\nPEAK USAGE:")
         print(f"Peak CPU: {peak_cpu}%")
@@ -126,15 +121,16 @@ def monitor_system():
         )
 
         if baseline_cgroup_stats and peak_cgroup_stats:
-            print("\nCGROUP MEMORY STATS DELTA:")
+            print("\nCGROUP MEMORY STATS DELTA (< 1MB is trimmed):")
             for category in baseline_cgroup_stats:
                 baseline = baseline_cgroup_stats.get(category, 0)
                 peak = peak_cgroup_stats.get(category, 0)
                 delta = peak - baseline
-                print(f"{category}:")
-                print(f"  Baseline: {get_size_gb(baseline):.3f}GB")
-                print(f"  Peak: {get_size_gb(peak):.3f}GB")
-                print(f"  Delta: {get_size_gb(delta):.3f}GB")
+                if delta > 1024 * 1024:
+                    print(f"{category}:")
+                    print(f"  Baseline: {get_size_gb(baseline):.3f}GB")
+                    print(f"  Peak: {get_size_gb(peak):.3f}GB")
+                    print(f"  Delta: {get_size_gb(delta):.3f}GB")
 
         print("\nAVERAGE USAGE:")
         print(f"Average CPU: {avg_cpu:.1f}%")
