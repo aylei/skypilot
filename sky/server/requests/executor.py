@@ -220,49 +220,50 @@ def _request_execution_wrapper(request_id: str,
 
     signal.signal(signal.SIGTERM, sigterm_handler)
 
-    pid = multiprocessing.current_process().pid
-    logger.info(f'Running request {request_id} with pid {pid}')
-    with api_requests.update_request(request_id) as request_task:
-        assert request_task is not None, request_id
-        log_path = request_task.log_path
-        request_task.pid = pid
-        request_task.status = api_requests.RequestStatus.RUNNING
-        func = request_task.entrypoint
-        request_body = request_task.request_body
+    with memray.Tracker(f"request.{os.getpid()}.bin", native_traces=True, follow_fork=True):
+        pid = multiprocessing.current_process().pid
+        logger.info(f'Running request {request_id} with pid {pid}')
+        with api_requests.update_request(request_id) as request_task:
+            assert request_task is not None, request_id
+            log_path = request_task.log_path
+            request_task.pid = pid
+            request_task.status = api_requests.RequestStatus.RUNNING
+            func = request_task.entrypoint
+            request_body = request_task.request_body
 
-    with log_path.open('w', encoding='utf-8') as f:
-        # Store copies of the original stdout and stderr file descriptors
-        original_stdout, original_stderr = _redirect_output(f)
-        # Redirect the stdout/stderr before overriding the environment and
-        # config, as there can be some logs during override that needs to be
-        # captured in the log file.
-        try:
-            with override_request_env_and_config(request_body):
-                return_value = func(**request_body.to_kwargs())
-        except KeyboardInterrupt:
-            logger.info(f'Request {request_id} cancelled by user')
-            _restore_output(original_stdout, original_stderr)
-            return
-        except (Exception, SystemExit) as e:  # pylint: disable=broad-except
-            with ux_utils.enable_traceback():
-                stacktrace = traceback.format_exc()
-            setattr(e, 'stacktrace', stacktrace)
-            with api_requests.update_request(request_id) as request_task:
-                assert request_task is not None, request_id
-                request_task.status = api_requests.RequestStatus.FAILED
-                request_task.set_error(e)
-            _restore_output(original_stdout, original_stderr)
-            logger.info(f'Request {request_id} failed due to '
-                        f'{common_utils.format_exception(e)}')
-            return
-        else:
-            with api_requests.update_request(request_id) as request_task:
-                assert request_task is not None, request_id
-                request_task.status = api_requests.RequestStatus.SUCCEEDED
-                if not ignore_return_value:
-                    request_task.set_return_value(return_value)
-            _restore_output(original_stdout, original_stderr)
-            logger.info(f'Request {request_id} finished')
+        with log_path.open('w', encoding='utf-8') as f:
+            # Store copies of the original stdout and stderr file descriptors
+            original_stdout, original_stderr = _redirect_output(f)
+            # Redirect the stdout/stderr before overriding the environment and
+            # config, as there can be some logs during override that needs to be
+            # captured in the log file.
+            try:
+                with override_request_env_and_config(request_body):
+                    return_value = func(**request_body.to_kwargs())
+            except KeyboardInterrupt:
+                logger.info(f'Request {request_id} cancelled by user')
+                _restore_output(original_stdout, original_stderr)
+                return
+            except (Exception, SystemExit) as e:  # pylint: disable=broad-except
+                with ux_utils.enable_traceback():
+                    stacktrace = traceback.format_exc()
+                setattr(e, 'stacktrace', stacktrace)
+                with api_requests.update_request(request_id) as request_task:
+                    assert request_task is not None, request_id
+                    request_task.status = api_requests.RequestStatus.FAILED
+                    request_task.set_error(e)
+                _restore_output(original_stdout, original_stderr)
+                logger.info(f'Request {request_id} failed due to '
+                            f'{common_utils.format_exception(e)}')
+                return
+            else:
+                with api_requests.update_request(request_id) as request_task:
+                    assert request_task is not None, request_id
+                    request_task.status = api_requests.RequestStatus.SUCCEEDED
+                    if not ignore_return_value:
+                        request_task.set_return_value(return_value)
+                _restore_output(original_stdout, original_stderr)
+                logger.info(f'Request {request_id} finished')
 
 
 def schedule_request(request_id: str,
