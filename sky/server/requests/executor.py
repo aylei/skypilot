@@ -49,6 +49,7 @@ from sky.utils import annotations
 from sky.utils import common_utils
 from sky.utils import timeline
 from sky.utils import ux_utils
+import memray
 
 if typing.TYPE_CHECKING:
     import types
@@ -310,52 +311,53 @@ def request_worker(worker: RequestWorker, max_parallel_size: int) -> None:
     Args:
         max_parallel_size: Maximum number of parallel jobs this worker can run.
     """
-    logger.info(f'Starting {worker} with pid '
-                f'{multiprocessing.current_process().pid}')
-    setproctitle.setproctitle(
-        f'SkyPilot:worker:{worker.schedule_type.value}-{worker.id}')
-    queue = _get_queue(worker.schedule_type)
+    with memray.Tracker(f"worker.{os.getpid()}.bin", native_traces=True, follow_fork=True):
+        logger.info(f'Starting {worker} with pid '
+                    f'{multiprocessing.current_process().pid}')
+        setproctitle.setproctitle(
+            f'SkyPilot:worker:{worker.schedule_type.value}-{worker.id}')
+        queue = _get_queue(worker.schedule_type)
 
-    sub_title = f'SkyPilot:executor:{worker.schedule_type.value}-{worker.id}'
-    # Use concurrent.futures.ProcessPoolExecutor instead of multiprocessing.Pool
-    # because the former is more efficient with the support of lazy creation of
-    # worker processes.
-    # We use executor instead of individual multiprocessing.Process to avoid
-    # the overhead of forking a new process for each request, which can be about
-    # 1s delay.
-    try:
-        with concurrent.futures.ProcessPoolExecutor(
-                max_workers=max_parallel_size, initializer=executor_initializer, initargs=(sub_title,)) as executor:
-            logger.info(f'AYLEI:executor initialized with max_workers={max_parallel_size}')
-            while True:
-                request_element = queue.get()
-                if request_element is None:
-                    time.sleep(0.1)
-                    continue
-                request_id, ignore_return_value = request_element
-                request = api_requests.get_request(request_id)
-                if request.status == api_requests.RequestStatus.CANCELLED:
-                    continue
-                logger.info(f'[{worker}] Submitting request: {request_id}')
-                # Start additional process to run the request, so that it can be
-                # cancelled when requested by a user.
-                # TODO(zhwu): since the executor is reusing the request process,
-                # multiple requests can share the same process pid, which may cause
-                # issues with SkyPilot core functions if they rely on the exit of
-                # the process, such as subprocess_daemon.py.
-                future = executor.submit(_request_execution_wrapper, request_id,
-                                        ignore_return_value)
+        sub_title = f'SkyPilot:executor:{worker.schedule_type.value}-{worker.id}'
+        # Use concurrent.futures.ProcessPoolExecutor instead of multiprocessing.Pool
+        # because the former is more efficient with the support of lazy creation of
+        # worker processes.
+        # We use executor instead of individual multiprocessing.Process to avoid
+        # the overhead of forking a new process for each request, which can be about
+        # 1s delay.
+        try:
+            with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=max_parallel_size, initializer=executor_initializer, initargs=(sub_title,)) as executor:
+                logger.info(f'AYLEI:executor initialized with max_workers={max_parallel_size}')
+                while True:
+                    request_element = queue.get()
+                    if request_element is None:
+                        time.sleep(0.1)
+                        continue
+                    request_id, ignore_return_value = request_element
+                    request = api_requests.get_request(request_id)
+                    if request.status == api_requests.RequestStatus.CANCELLED:
+                        continue
+                    logger.info(f'[{worker}] Submitting request: {request_id}')
+                    # Start additional process to run the request, so that it can be
+                    # cancelled when requested by a user.
+                    # TODO(zhwu): since the executor is reusing the request process,
+                    # multiple requests can share the same process pid, which may cause
+                    # issues with SkyPilot core functions if they rely on the exit of
+                    # the process, such as subprocess_daemon.py.
+                    future = executor.submit(_request_execution_wrapper, request_id,
+                                            ignore_return_value)
 
-                if worker.schedule_type == api_requests.ScheduleType.LONG:
-                    try:
-                        future.result(timeout=None)
-                    except Exception as e:  # pylint: disable=broad-except
-                        logger.error(f'[{worker}] Request {request_id} failed: {e}')
-                    logger.info(f'[{worker}] Finished request: {request_id}')
-                else:
-                    logger.info(f'[{worker}] Submitted request: {request_id}')
-    except Exception as e:
-        logger.error(f'[{worker}] Exiting: {e}')
+                    if worker.schedule_type == api_requests.ScheduleType.LONG:
+                        try:
+                            future.result(timeout=None)
+                        except Exception as e:  # pylint: disable=broad-except
+                            logger.error(f'[{worker}] Request {request_id} failed: {e}')
+                        logger.info(f'[{worker}] Finished request: {request_id}')
+                    else:
+                        logger.info(f'[{worker}] Submitted request: {request_id}')
+        except Exception as e:
+            logger.error(f'[{worker}] Exiting: {e}')
 
 
 def _get_cpu_count() -> int:

@@ -42,7 +42,7 @@ AVAILABLE_LOCAL_API_SERVER_URLS = [
     f'http://{host}:46580' for host in AVAILBLE_LOCAL_API_SERVER_HOSTS
 ]
 
-API_SERVER_CMD = 'memray run -m sky.server.server'
+API_SERVER_CMD = 'memray run --native -m sky.server.server'
 # The client dir on the API server for storing user-specific data, such as file
 # mounts, logs, etc. This dir is empheral and will be cleaned up when the API
 # server is restarted.
