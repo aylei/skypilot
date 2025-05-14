@@ -467,3 +467,150 @@ class DockerInitializer:
                            wait_for_docker_daemon=True)
         return ('false' in output.lower() and
                 'no such object' not in output.lower())
+
+    def initialize_sh(self) -> str:
+        """Initialize docker container by executing a single bash script.
+        
+        This is equivalent to initialize() but consolidates all commands into a 
+        single bash script for better performance.
+        
+        Returns:
+            str: The docker user inside the container.
+        """
+        specific_image = self.docker_config['image']
+        
+        # Prepare script template with all required commands
+        script = '''
+#!/bin/bash
+set -e
+
+check_docker_installed() {
+    if ! command -v ${docker_cmd} &> /dev/null; then
+        echo "${docker_cmd} not installed"
+        exit 1
+    fi
+    id -nG $USER | grep -qw docker || sudo usermod -aG docker $USER
+}
+
+check_container_exited() {
+    ${docker_cmd} inspect -f "{{.State.Running}}" ${container_name} 2>/dev/null | \
+        grep -q "false" || return 1
+}
+
+check_container_running() {
+    ${docker_cmd} inspect -f "{{.State.Running}}" ${container_name} 2>/dev/null | \
+        grep -q "true" || return 1
+}
+
+docker_cmd="${docker_cmd}"
+container_name="${container_name}"
+specific_image="${specific_image}"
+
+# Check docker installation
+check_docker_installed
+
+# Check if container exists but stopped
+if check_container_exited; then
+    ${docker_cmd} start ${container_name}
+    ${docker_cmd} exec ${container_name} sudo service ssh start
+    ${docker_cmd} exec ${container_name} whoami
+    exit 0
+fi
+
+# Docker login if needed
+'''
+        if 'docker_login_config' in self.docker_config:
+            docker_login_config = DockerLoginConfig(
+                **self.docker_config['docker_login_config'])
+            script += f'''
+# Login to private registry
+{self.docker_cmd} login --username {docker_login_config.username} \
+    --password {docker_login_config.password} {docker_login_config.server}
+'''
+            specific_image = docker_login_config.format_image(specific_image)
+            script = script.replace('specific_image="${specific_image}"',
+                                  f'specific_image="{specific_image}"')
+
+        script += f'''
+# Pull image if needed
+if [ "{str(self.docker_config.get('pull_before_run', True)).lower()}" = "true" ]; then
+    {self.docker_cmd} pull {specific_image}
+else
+    {self.docker_cmd} image inspect {specific_image} 1>/dev/null 2>&1 || \
+        {self.docker_cmd} pull {specific_image}
+fi
+
+# Check if container is already running
+if check_container_running; then
+    running_image=$({self.docker_cmd} inspect -f "{{{{.Config.Image}}}}" \
+        {self.container_name})
+    if [ "$running_image" != "{specific_image}" ]; then
+        echo "Error: Container {self.container_name} is running image \
+$running_image instead of {specific_image}"
+        exit 1
+    fi
+else
+    # Configure docker daemon for NVIDIA support
+    if ! which jq &>/dev/null; then
+        sudo apt update && sudo apt install -y jq
+    fi
+    if [ ! -f /etc/docker/daemon.json ]; then
+        echo "{{}}" | sudo tee /etc/docker/daemon.json
+    fi
+    sudo jq '.["exec-opts"] = ["native.cgroupdriver=cgroupfs"]' \
+        /etc/docker/daemon.json > /tmp/daemon.json
+    sudo mv /tmp/daemon.json /etc/docker/daemon.json
+    sudo systemctl restart docker || true
+
+    # Start container
+    {self.docker_cmd} run --name {self.container_name} -d -it \
+        -e LC_ALL=C.UTF-8 -e LANG=C.UTF-8 --net=host \
+        --cap-add=SYS_ADMIN --device=/dev/fuse \
+        --security-opt=apparmor:unconfined \
+        --entrypoint=/bin/bash {specific_image}
+fi
+
+# Setup container environment
+{self.docker_cmd} exec {self.container_name} bash -c '
+    # Configure environment
+    echo "{command_runner.ALIAS_SUDO_TO_EMPTY_FOR_ROOT_CMD}" >> ~/.bashrc
+    echo "export DEBIAN_FRONTEND=noninteractive" >> ~/.bashrc
+
+    # Install dependencies
+    apt-get update
+    apt-get -o DPkg::Options::="--force-confnew" install -y \
+        rsync curl wget patch openssh-server python3-pip fuse
+'
+
+# Copy SSH keys and configure services
+rsync -e "{self.docker_cmd} exec -i" -avz ~/.ssh/authorized_keys \
+    {constants.DEFAULT_DOCKER_CONTAINER_NAME}:/tmp/host_ssh_authorized_keys
+
+# Stop and disable jupyter services
+sudo systemctl stop jupyter > /dev/null 2>&1 || true
+sudo systemctl disable jupyter > /dev/null 2>&1 || true
+sudo systemctl stop jupyterhub > /dev/null 2>&1 || true
+sudo systemctl disable jupyterhub > /dev/null 2>&1 || true
+
+# Configure SSH and environment in container
+{self.docker_cmd} exec {self.container_name} bash -c '
+    # Configure SSH
+    sudo sed -i "s/#Port 22/Port {constants.DEFAULT_DOCKER_PORT}/" \
+        /etc/ssh/sshd_config
+    mkdir -p ~/.ssh
+    cat /tmp/host_ssh_authorized_keys >> ~/.ssh/authorized_keys
+    sudo service ssh start
+    sudo sed -i "s/mesg n/tty -s \&\& mesg n/" ~/.profile
+
+    # Setup environment variables
+    {SETUP_ENV_VARS_CMD}
+'
+
+# Get docker user
+{self.docker_cmd} exec {self.container_name} whoami
+'''
+
+        # Execute the script
+        docker_user = self._run(script)
+        self.initialized = True
+        return docker_user
