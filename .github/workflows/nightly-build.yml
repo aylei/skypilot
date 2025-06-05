@@ -92,6 +92,7 @@ jobs:
       # Trigger Buildkite smoke tests
       - name: Trigger Buildkite Smoke Tests
         id: trigger_buildkite
+        if: ${{ !inputs.skip_buildkite }}
         uses: buildkite/trigger-pipeline-action@v2.3.0
         with:
           buildkite_api_access_token: ${{ secrets.BUILDKITE_TOKEN }}
