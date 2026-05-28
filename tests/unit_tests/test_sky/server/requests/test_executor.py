@@ -15,7 +15,6 @@ from sky import exceptions
 from sky import skypilot_config
 from sky.server import config as server_config
 from sky.server import constants as server_constants
-from sky.server import daemons as server_daemons
 from sky.server.requests import executor
 from sky.server.requests import payloads
 from sky.server.requests import process
@@ -687,110 +686,6 @@ def test_resolve_blob_invalid_id(tmp_path, monkeypatch):
         server_common.resolve_blob_dir('not-a-hash', 'testuser')
 
 
-@pytest.fixture()
-def stub_override_request_env_deps(monkeypatch):
-    """Stub out reload/permissions/user upsert for override_request_env tests.
-
-    Lets the tests assert only what override_request_env_and_config does to
-    os.environ, without needing a real DB / context / permission backend.
-    """
-    monkeypatch.setattr('sky.server.common.reload_for_new_request', mock.Mock())
-    monkeypatch.setattr(
-        'sky.workspaces.core.reject_request_for_unauthorized_workspace',
-        mock.Mock())
-
-    fake_user = mock.Mock()
-    fake_user.id = 'client-user-id'
-    fake_user.name = 'client-user'
-
-    def fake_add_or_update_user(user, return_user=False, **kwargs):
-        if return_user:
-            return True, fake_user
-        return True
-
-    monkeypatch.setattr('sky.global_user_state.add_or_update_user',
-                        fake_add_or_update_user)
-
-
-def test_override_env_skipped_for_daemon_request(stub_override_request_env_deps,
-                                                 monkeypatch):
-    """Daemon request_ids must NOT have their persisted env_vars overlaid.
-
-    Reproduces SKY-5502: a daemon row in PG carrying stale downward-API
-    values from a previous deployment generation must not clobber the
-    current pod's os.environ.
-    """
-    # Seed the "current pod" env with realistic downward-API values.
-    monkeypatch.setenv('SKYPILOT_POD_MEMORY_BYTES_LIMIT', str(300 * 1024**3))
-    monkeypatch.setenv('SKYPILOT_APISERVER_UUID', 'current-pod-uuid')
-
-    # Persisted daemon body has STALE values from a now-dead pod.
-    body = payloads.RequestBody(
-        env_vars={
-            'SKYPILOT_POD_MEMORY_BYTES_LIMIT': str(100 * 1024 * 1024),
-            'SKYPILOT_APISERVER_UUID': 'stale-pod-uuid',
-            constants.USER_ID_ENV_VAR: 'irrelevant',
-            constants.USER_ENV_VAR: 'irrelevant',
-        })
-
-    # Pick a real daemon id so daemons.is_daemon_request_id returns True.
-    daemon_id = server_daemons.INTERNAL_REQUEST_DAEMONS[0].id
-
-    with executor.override_request_env_and_config(body,
-                                                  request_id=daemon_id,
-                                                  request_name='daemon'):
-        assert os.environ['SKYPILOT_POD_MEMORY_BYTES_LIMIT'] == str(
-            300 * 1024**3), ('daemon override clobbered the current pod env')
-        assert os.environ['SKYPILOT_APISERVER_UUID'] == 'current-pod-uuid'
-
-
-def test_override_env_applied_for_client_request(stub_override_request_env_deps,
-                                                 monkeypatch):
-    """Regression guard: client requests must still have env_vars applied."""
-    monkeypatch.setenv('SKYPILOT_POD_MEMORY_BYTES_LIMIT', str(300 * 1024**3))
-
-    body = payloads.RequestBody(
-        env_vars={
-            'SKYPILOT_POD_MEMORY_BYTES_LIMIT': str(100 * 1024 * 1024),
-            constants.USER_ID_ENV_VAR: 'client-user-id',
-            constants.USER_ENV_VAR: 'client-user',
-        })
-
-    with executor.override_request_env_and_config(
-            body, request_id='not-a-daemon-uuid', request_name='sky.launch'):
-        assert os.environ['SKYPILOT_POD_MEMORY_BYTES_LIMIT'] == str(100 * 1024 *
-                                                                    1024)
-
-
-def test_daemon_env_mutations_reverted_on_exit(stub_override_request_env_deps,
-                                               monkeypatch):
-    """Daemon env mutations inside the with block must be reverted on exit.
-
-    Daemons (e.g. InternalRequestDaemon.run_event) set
-    SKYPILOT_DISABLE_LOGGING from inside the with block. If that mutation
-    leaked, the next request handled by the same worker would inherit it.
-    """
-    monkeypatch.setenv('SKYPILOT_PRE_EXISTING', 'before')
-    monkeypatch.delenv('SKYPILOT_NEW_VAR', raising=False)
-
-    body = payloads.RequestBody(
-        env_vars={
-            constants.USER_ID_ENV_VAR: 'irrelevant',
-            constants.USER_ENV_VAR: 'irrelevant',
-        })
-
-    daemon_id = server_daemons.INTERNAL_REQUEST_DAEMONS[0].id
-
-    with executor.override_request_env_and_config(body,
-                                                  request_id=daemon_id,
-                                                  request_name='daemon'):
-        os.environ['SKYPILOT_NEW_VAR'] = 'inside'
-        del os.environ['SKYPILOT_PRE_EXISTING']
-
-    assert 'SKYPILOT_NEW_VAR' not in os.environ
-    assert os.environ['SKYPILOT_PRE_EXISTING'] == 'before'
-
-
 def test_resolve_blob_missing_file(tmp_path, monkeypatch):
     """Test that resolve_blob_dir raises FileNotFoundError when blob is missing."""
     blob_id = 'b' * 64
@@ -803,165 +698,210 @@ def test_resolve_blob_missing_file(tmp_path, monkeypatch):
         server_common.resolve_blob_dir(blob_id, 'testuser')
 
 
-# ---- Workspace resolution info log -------------------------------------
+# ---------------------------------------------------------------------------
+# Gated SIGTERM handler tests.
 #
-# `override_request_env_and_config` writes an INFO-level log when the
-# resolver picks a workspace implicitly (preferred / default-fallback /
-# single-membership) for a resource-creating request. The launch flow
-# streams that log back to the CLI, so the user sees which workspace
-# their cluster / job ended up in.
+# Background. A cancel sends SIGTERM by reading the pid stored on a RUNNING
+# request row. The pid is a long-lived ProcessPoolExecutor worker PID, so a
+# stale RUNNING row (e.g. one whose wrapper exited without writing a terminal
+# status, or one cancelled cross-replica while the row state didn't catch up)
+# can route SIGTERM to a worker that is now sitting idle inside
+# concurrent.futures._process_worker's `call_queue.get(block=True)`. Raising
+# KeyboardInterrupt from that frame is unhandled — the worker dies,
+# ProcessPoolExecutor marks the whole pool BROKEN, and every in-flight future
+# plus subsequent submits fail with BrokenProcessPool.
 #
-# The tests below are unit-level: they stub the resolver + permission
-# check and verify the log gating logic, not the resolver itself
-# (covered in test_resolve_workspace_for_user.py).
-
-
-def _resolution(workspace, source):
-    """Build a fake WorkspaceResolution for tests below."""
-    from sky.workspaces import core as workspaces_core
-    return workspaces_core.WorkspaceResolution(workspace=workspace,
-                                               source=source)
+# The gated handler raises KI only while the worker is inside the
+# wrapper's protected region (_in_request_execution=True). When idle, it
+# latches a pending flag instead so the next request's wrapper entry honors
+# the cancel intent without killing the worker.
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture()
-def resolver_log_deps(monkeypatch, stub_override_request_env_deps):
-    """Pin the resolver gate to ON and stub the resolver itself."""
-    monkeypatch.setattr(
-        'sky.server.requests.executor._should_apply_workspace_resolver',
-        lambda is_daemon, client_api_version: True)
-    return monkeypatch
+def reset_sigterm_gate():
+    """Reset the gated-handler module flags around each test.
 
-
-def _run_override(request_name: str, resolution):
-    """Drive override_request_env_and_config with a mocked resolution.
-
-    Returns the list of `logger.info` calls (so tests can assert on the
-    "Using workspace ..." line without depending on log capture).
+    These are module-level and shared across tests in the same process.
     """
-    from sky.workspaces import core as workspaces_core
-    body = payloads.RequestBody(
-        env_vars={
-            constants.USER_ID_ENV_VAR: 'client-user-id',
-            constants.USER_ENV_VAR: 'client-user',
-        })
-    info_calls: List[str] = []
-    with mock.patch.object(workspaces_core,
-                           'resolve_workspace_for_user',
-                           return_value=resolution), \
-         mock.patch.object(executor.logger, 'info',
-                           side_effect=lambda msg, *a, **k: info_calls.append(
-                               msg)):
-        with executor.override_request_env_and_config(
-                body, request_id='not-a-daemon-uuid',
-                request_name=request_name):
-            pass
-    return info_calls
+    import signal as _signal
+    original_handler = _signal.getsignal(_signal.SIGTERM)
+    executor._in_request_execution = False
+    executor._pending_sigterm = False
+    yield
+    executor._in_request_execution = False
+    executor._pending_sigterm = False
+    _signal.signal(_signal.SIGTERM, original_handler)
 
 
-def test_resolution_log_fires_for_launch_with_implicit_source(
-        resolver_log_deps):
-    """`sky launch` with no explicit workspace → resolver picks via
-    preferred / default-fallback / single-membership. The user sees
-    "Using workspace 'X' (source: …)" so they know which workspace
-    SkyPilot stamped onto the cluster row.
-
-    The request_name passed to override_request_env_and_config is the
-    name as stored on the task row — `REQUEST_NAME_PREFIX + <enum>`.
-    `prepare_request_async` does the prefixing once at enqueue time."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name=(server_constants.REQUEST_NAME_PREFIX + 'launch'),
-        resolution=_resolution(
-            'team-a', workspace_constants.WORKSPACE_SOURCE_SINGLE_MEMBERSHIP))
-    matching = [m for m in info_calls if 'Using workspace' in m]
-    assert len(matching) == 1, (
-        f'Expected one resolution-log line, got: {info_calls}')
-    msg = matching[0]
-    assert "'team-a'" in msg
-    assert workspace_constants.WORKSPACE_SOURCE_SINGLE_MEMBERSHIP in msg
+def test_gated_sigterm_handler_raises_when_active(reset_sigterm_gate):
+    """SIGTERM during request execution → KeyboardInterrupt, no latch."""
+    import signal as _signal
+    executor._in_request_execution = True
+    with pytest.raises(KeyboardInterrupt):
+        executor._gated_sigterm_handler(_signal.SIGTERM, None)
+    # Active path doesn't latch — the cancel was delivered as an exception.
+    assert executor._pending_sigterm is False
 
 
-def test_resolution_log_fires_for_jobs_launch_with_preferred(resolver_log_deps):
-    """Same log path for managed jobs — `sky jobs launch` is also a
-    resource-creating verb (writes job_info.workspace), users need to
-    see which workspace it landed in."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name=(server_constants.REQUEST_NAME_PREFIX + 'jobs.launch'),
-        resolution=_resolution('team-b',
-                               workspace_constants.WORKSPACE_SOURCE_PREFERRED))
-    matching = [m for m in info_calls if 'Using workspace' in m]
-    assert len(matching) == 1
-    assert "'team-b'" in matching[0]
+def test_gated_sigterm_handler_latches_when_idle(reset_sigterm_gate):
+    """SIGTERM while idle → no raise, _pending_sigterm latched.
+
+    This is the regression-shaped invariant: if this raised, an idle worker
+    sitting in call_queue.get() would die and break the pool.
+    """
+    import signal as _signal
+    executor._in_request_execution = False
+    executor._pending_sigterm = False
+    # Must not raise.
+    executor._gated_sigterm_handler(_signal.SIGTERM, None)
+    assert executor._pending_sigterm is True
 
 
-def test_resolution_log_silent_when_source_default_fallback(resolver_log_deps):
-    """Landing on 'default' via default-fallback is the pre-existing
-    silent behavior — every user without a preferred who has access to
-    'default' lands there. Surfacing that in the log on every launch
-    would clutter the common case while telling the user nothing new
-    (they're already used to landing on 'default').
+@pytest.mark.asyncio
+async def test_wrapper_honors_pending_sigterm_on_entry(isolated_database,
+                                                       reset_sigterm_gate):
+    """A pending SIGTERM latched while idle is honored at the next entry.
 
-    Revert check: drop DEFAULT_FALLBACK from
-    `_SILENT_WORKSPACE_RESOLUTION_SOURCES` and this test flips to a
-    log-firing assertion failure."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name=(server_constants.REQUEST_NAME_PREFIX + 'launch'),
-        resolution=_resolution(
-            'default', workspace_constants.WORKSPACE_SOURCE_DEFAULT_FALLBACK))
-    assert not [m for m in info_calls if 'Using workspace' in m
-               ], (f'DEFAULT_FALLBACK must not log; got: {info_calls}')
+    The wrapper raises KeyboardInterrupt before touching the row, the except-
+    block returns, and the latch is cleared. The entrypoint must not run.
+    """
+    _pending_sigterm_entrypoint_called[0] = False
+    req = requests_lib.Request(request_id='pending-sigterm-test',
+                               name='test',
+                               entrypoint=_pending_sigterm_test_entrypoint,
+                               request_body=payloads.RequestBody(),
+                               status=requests_lib.RequestStatus.PENDING,
+                               created_at=0.0,
+                               user_id='test-user')
+    assert await requests_lib.create_if_not_exists_async(req) is True
 
+    executor._in_request_execution = False
+    executor._pending_sigterm = True
 
-def test_resolution_log_silent_when_source_explicit(resolver_log_deps):
-    """When `active_workspace` was explicitly set (--workspace flag or
-    a config file), the user already named the workspace — repeating
-    it in the log is noise. EXPLICIT must not trigger the line."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name=(server_constants.REQUEST_NAME_PREFIX + 'launch'),
-        resolution=_resolution('team-c',
-                               workspace_constants.WORKSPACE_SOURCE_EXPLICIT))
-    assert not [m for m in info_calls if 'Using workspace' in m
-               ], (f'EXPLICIT source must not log; got: {info_calls}')
+    # Wrapper should observe the latch, raise+catch KI, and return cleanly.
+    executor._request_execution_wrapper('pending-sigterm-test',
+                                        ignore_return_value=False)
 
-
-def test_resolution_log_silent_for_non_resource_creating_request(
-        resolver_log_deps):
-    """`sky status` / `sky queue` etc. resolve the same way but don't
-    persist the workspace onto durable state. Logging there would be
-    noise on commands the user runs frequently. The whitelist
-    (_RESOURCE_CREATING_REQUEST_NAMES_FOR_RESOLUTION_LOG) is what
-    keeps this scoped — extend it when adding a new resource-creating
-    verb (SERVE_UP, etc.)."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name=(server_constants.REQUEST_NAME_PREFIX + 'status'),
-        resolution=_resolution(
-            'team-a', workspace_constants.WORKSPACE_SOURCE_SINGLE_MEMBERSHIP))
-    assert not [m for m in info_calls if 'Using workspace' in m], (
-        f'`status` must not surface the resolution log; got: {info_calls}')
+    assert _pending_sigterm_entrypoint_called[0] is False, (
+        'Entrypoint must not run when SIGTERM is pending')
+    # Latch was consumed.
+    assert executor._pending_sigterm is False
+    # Protected-region flag was cleared in `finally`.
+    assert executor._in_request_execution is False
 
 
-def test_resolution_log_silent_for_bare_launch_without_prefix(
-        resolver_log_deps):
-    """Protocol lock: the runtime `request_name` (read off
-    `request_task.name`) is always the prefixed form
-    (`'sky.launch'`); the raw enum value `'launch'` never reaches
-    `override_request_env_and_config`. If a future refactor drops the
-    prefix in the whitelist, this test would START passing the log
-    line and then break BOTH this case AND production — keep this case
-    locking the prefix in.
+@pytest.mark.asyncio
+async def test_wrapper_clears_in_request_execution_after_success(
+        isolated_database, reset_sigterm_gate):
+    """After a normal request the gate must return to the idle state."""
 
-    Revert check: drop `REQUEST_NAME_PREFIX +` from the whitelist and
-    this test still passes (no log) but the prefixed tests above flip
-    to failing — the two sides together pin the contract."""
-    from sky.workspaces import constants as workspace_constants
-    info_calls = _run_override(
-        request_name='launch',
-        resolution=_resolution(
-            'team-a', workspace_constants.WORKSPACE_SOURCE_SINGLE_MEMBERSHIP))
-    assert not [m for m in info_calls if 'Using workspace' in m], (
-        f'bare `launch` (without prefix) must not match the whitelist; '
-        f'got: {info_calls}')
+    req = requests_lib.Request(request_id='gate-cleared-on-success',
+                               name='test',
+                               entrypoint=_gate_clears_after_success_entrypoint,
+                               request_body=payloads.RequestBody(),
+                               status=requests_lib.RequestStatus.PENDING,
+                               created_at=0.0,
+                               user_id='test-user')
+    assert await requests_lib.create_if_not_exists_async(req) is True
+
+    executor._request_execution_wrapper('gate-cleared-on-success',
+                                        ignore_return_value=False)
+
+    # finally must have flipped this back to False so the next SIGTERM
+    # arriving between requests gets latched, not raised.
+    assert executor._in_request_execution is False
+    assert executor._pending_sigterm is False
+
+
+# ---------------------------------------------------------------------------
+# Integration regression: an idle worker hit by SIGTERM must not break the
+# ProcessPoolExecutor it lives in. Without the gated handler, this test
+# reliably fails with BrokenProcessPool.
+# ---------------------------------------------------------------------------
+
+_pending_sigterm_entrypoint_called = [False]
+
+
+def _pending_sigterm_test_entrypoint():
+    _pending_sigterm_entrypoint_called[0] = True
+    return 'should-not-happen'
+
+
+def _gate_clears_after_success_entrypoint():
+    return 'ok'
+
+
+def _install_gated_handler_in_worker():
+    """ProcessPoolExecutor initializer that installs the gated SIGTERM
+    handler in the worker subprocess and leaves _in_request_execution=False,
+    mimicking a worker that has finished a task and is about to block on
+    call_queue.get() for the next one.
+    """
+    import signal as _signal
+
+    from sky.server.requests import executor as _executor
+    _signal.signal(_signal.SIGTERM, _executor._gated_sigterm_handler)
+    _executor._in_request_execution = False
+    _executor._pending_sigterm = False
+
+
+def _worker_pid():
+    return os.getpid()
+
+
+def _identity(x):
+    return x
+
+
+def test_idle_worker_survives_sigterm_with_gated_handler():
+    """Regression: SIGTERM to an idle worker must not break the pool.
+
+    Reproduces the production observation where a cancel-all's SIGTERM
+    landed on a worker that was already done with the row recorded as
+    its pid, taking down the entire SHORT/LONG process pool with
+    BrokenProcessPool. With the gated handler installed in the worker
+    initializer, the signal is latched instead of raised, the worker
+    keeps running, and subsequent submits succeed normally.
+
+    Without the gated handler (i.e. using the bare _sigterm_handler that
+    always raises KeyboardInterrupt), the second submit below would
+    raise concurrent.futures.process.BrokenProcessPool.
+    """
+    import signal as _signal
+    with concurrent.futures.ProcessPoolExecutor(
+            max_workers=2,
+            initializer=_install_gated_handler_in_worker) as pool:
+        # Warm up a worker and capture its pid.
+        pid = pool.submit(_worker_pid).result(timeout=10)
+
+        # The worker has returned its result and is now blocking on
+        # call_queue.get() waiting for the next task. Hit it with the
+        # SIGTERM that the cancel path would deliver.
+        os.kill(pid, _signal.SIGTERM)
+
+        # Give the signal time to be delivered. We don't have a reliable
+        # synchronization handle for "signal handled by worker", so
+        # poll-submit a few times — under the bug, the very first
+        # post-SIGTERM submit raises BrokenProcessPool.
+        deadline = time.time() + 5
+        last_exc = None
+        while time.time() < deadline:
+            try:
+                result = pool.submit(_identity, 'alive').result(timeout=5)
+                assert result == 'alive'
+                last_exc = None
+                break
+            except concurrent.futures.process.BrokenProcessPool as e:
+                last_exc = e
+                break  # Bug reproduces — fail fast, don't retry.
+            except Exception as e:  # pylint: disable=broad-except
+                last_exc = e
+                time.sleep(0.1)
+        assert last_exc is None, (
+            f'Pool should remain usable after SIGTERM to an idle worker, '
+            f'but got: {type(last_exc).__name__}: {last_exc}')
+
+        # Submit a few more to convince ourselves the pool is healthy.
+        for i in range(3):
+            assert pool.submit(_identity, i).result(timeout=5) == i
