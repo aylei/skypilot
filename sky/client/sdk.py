@@ -112,7 +112,8 @@ def stream_response(request_id: None,
                     response: 'requests.Response',
                     output_stream: Optional['io.TextIOBase'] = None,
                     resumable: bool = False,
-                    get_result: bool = True) -> None:
+                    get_result: bool = True,
+                    relay_rich_status: bool = False) -> None:
     ...
 
 
@@ -121,7 +122,8 @@ def stream_response(request_id: server_common.RequestId[T],
                     response: 'requests.Response',
                     output_stream: Optional['io.TextIOBase'] = None,
                     resumable: bool = False,
-                    get_result: Literal[True] = True) -> T:
+                    get_result: Literal[True] = True,
+                    relay_rich_status: bool = False) -> T:
     ...
 
 
@@ -130,7 +132,8 @@ def stream_response(request_id: server_common.RequestId[T],
                     response: 'requests.Response',
                     output_stream: Optional['io.TextIOBase'] = None,
                     resumable: bool = False,
-                    get_result: bool = True) -> Optional[T]:
+                    get_result: bool = True,
+                    relay_rich_status: bool = False) -> Optional[T]:
     ...
 
 
@@ -138,7 +141,8 @@ def stream_response(request_id: Optional[server_common.RequestId[T]],
                     response: 'requests.Response',
                     output_stream: Optional['io.TextIOBase'] = None,
                     resumable: bool = False,
-                    get_result: bool = True) -> Optional[T]:
+                    get_result: bool = True,
+                    relay_rich_status: bool = False) -> Optional[T]:
     """Streams the response to the console.
 
     Args:
@@ -154,6 +158,9 @@ def stream_response(request_id: Optional[server_common.RequestId[T]],
         get_result: Whether to get the result of the request. This will
             typically be set to False for `--no-follow` flags as requests may
             continue to run for long periods of time without further streaming.
+        relay_rich_status: If True, forward encoded rich-status control payloads
+            verbatim to the output instead of rendering a local spinner. See
+            :func:`sky.utils.rich_utils.decode_rich_status`.
     """
 
     # Always fetch the retry context (if any) so we can report progress to
@@ -163,7 +170,8 @@ def stream_response(request_id: Optional[server_common.RequestId[T]],
     try:
         line_count = 0
 
-        for line in rich_utils.decode_rich_status(response):
+        for line in rich_utils.decode_rich_status(
+                response, relay_rich_status=relay_rich_status):
             # Report forward progress to the retry decorator for every
             # message received from the wire, including None control
             # messages (e.g. heartbeats). Receiving any message
@@ -2257,7 +2265,8 @@ def stream_and_get(request_id: server_common.RequestId[T],
                    log_path: Optional[str] = None,
                    tail: Optional[int] = None,
                    follow: bool = True,
-                   output_stream: Optional['io.TextIOBase'] = None) -> T:
+                   output_stream: Optional['io.TextIOBase'] = None,
+                   relay_rich_status: bool = False) -> T:
     ...
 
 
@@ -2266,7 +2275,8 @@ def stream_and_get(request_id: None = None,
                    log_path: Optional[str] = None,
                    tail: Optional[int] = None,
                    follow: bool = True,
-                   output_stream: Optional['io.TextIOBase'] = None) -> None:
+                   output_stream: Optional['io.TextIOBase'] = None,
+                   relay_rich_status: bool = False) -> None:
     ...
 
 
@@ -2280,6 +2290,7 @@ def stream_and_get(
     tail: Optional[int] = None,
     follow: bool = True,
     output_stream: Optional['io.TextIOBase'] = None,
+    relay_rich_status: bool = False,
 ) -> Optional[T]:
     """Streams the logs of a request or a log file and gets the final result.
 
@@ -2297,6 +2308,11 @@ def stream_and_get(
         follow: Whether to follow the logs.
         output_stream: The output stream to write to. If None, print to the
             console.
+        relay_rich_status: If True, forward encoded rich-status control payloads
+            verbatim to the output instead of rendering a local spinner. Used by
+            the managed jobs controller to preserve provisioning spinner codes
+            in its per-job log. See
+            :func:`sky.utils.rich_utils.decode_rich_status`.
 
     Returns:
         The ``Request Returns`` of the specified request. See the documentation
@@ -2344,7 +2360,8 @@ def stream_and_get(
                            response,
                            output_stream,
                            resumable=True,
-                           get_result=follow)
+                           get_result=follow,
+                           relay_rich_status=relay_rich_status)
 
 
 @usage_lib.entrypoint
