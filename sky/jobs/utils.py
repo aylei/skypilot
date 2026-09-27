@@ -63,6 +63,7 @@ from sky.utils import resources_utils
 from sky.utils import rich_utils
 from sky.utils import subprocess_utils
 from sky.utils import ux_utils
+from sky.utils.plugin_extensions import LogDeliverySource
 
 if typing.TYPE_CHECKING:
     from google.protobuf import descriptor
@@ -2259,6 +2260,74 @@ def _waiting_line_detail(provision_msg: Optional[str],
     return parked_reason
 
 
+# How often a log-store follow re-reads the task's status.
+_STORE_FOLLOW_STATUS_CHECK_SECONDS = 2
+# How often to check whether the controller moved past a finished task.
+_TASK_ADVANCE_POLL_SECONDS = 1
+
+
+def _task_is_running(job_id: int, task_id: int) -> bool:
+    for row_task_id, _, status, _, _ in (
+            managed_job_state.get_all_task_ids_names_statuses_logs(job_id)):
+        if row_task_id == task_id:
+            return (not status.is_terminal() and
+                    status != managed_job_state.ManagedJobStatus.CANCELLING)
+    return False
+
+
+def _follow_from_log_store(
+        job_id: int, task_id: int, task_name: Optional[str],
+        handle: 'cloud_vm_ray_backend.CloudVmRayResourceHandle',
+        tail: Optional[int]) -> Optional[int]:
+    """Follows a running task's logs from the external log store.
+
+    Returns None when the task cannot be followed from the store (no reader,
+    the reader cannot follow this task, or its logs are not confirmed to reach
+    the store), so the caller streams from the cluster instead. Otherwise
+    returns once the task is no longer running and its logs were read.
+    """
+    reader = logs.get_log_reader()
+    if reader is None:
+        return None
+    reason = LogDeliverySource.undelivered_reason(
+        cluster_name=handle.cluster_name,
+        cluster_name_on_cloud=handle.cluster_name_on_cloud)
+    if reason is not None:
+        logger.debug(f'Not following job {job_id} task {task_id} from the '
+                     f'external log store: {reason}')
+        return None
+
+    last_check = 0.0
+    done = False
+
+    def is_done() -> bool:
+        nonlocal last_check, done
+        context_utils.raise_if_canceled()
+        if done:
+            return True
+        now = time.monotonic()
+        if now - last_check < _STORE_FOLLOW_STATUS_CHECK_SECONDS:
+            return False
+        last_check = now
+        done = not _task_is_running(job_id, task_id)
+        return done
+
+    try:
+        return reader.follow_managed_job_logs(
+            job_id,
+            task_id,
+            task_name=task_name,
+            cluster_name_on_cloud=handle.cluster_name_on_cloud,
+            tail=tail or 0,
+            is_done=is_done)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # pylint: disable=broad-except
+        logger.warning(f'Failed to follow job {job_id} logs from the external '
+                       f'log store, streaming from the cluster instead: {e}')
+        return None
+
+
 def stream_logs_by_id(
         job_id: int,
         follow: bool = True,
@@ -2665,6 +2734,29 @@ def stream_logs_by_id(
                     managed_job_state.ManagedJobStatus.RUNNING)
             assert isinstance(handle, backends.CloudVmRayResourceHandle), handle
             status_display.stop()
+            if follow and tail_offset is None and pool is None:
+                store_returncode = _follow_from_log_store(
+                    job_id, task_id, task_name, handle, tail)
+                if store_returncode is not None:
+                    # The task finished. Wait for the controller to move on
+                    # so the next round does not follow the same task again.
+                    while True:
+                        context_utils.raise_if_canceled()
+                        latest_task_id, managed_job_status = (
+                            managed_job_state.get_latest_task_id_status(job_id))
+                        assert managed_job_status is not None, job_id
+                        if (latest_task_id != task_id or
+                                not should_keep_logging(managed_job_status)):
+                            break
+                        time.sleep(_TASK_ADVANCE_POLL_SECONDS)
+                    if (filtered_task_id is not None or
+                            not should_keep_logging(managed_job_status)):
+                        break
+                    assert latest_task_id is not None, job_id
+                    # Keep the finished task's last line above the display.
+                    print()
+                    task_id = latest_task_id
+                    continue
             returncode = None
             if managed_job_runtime.is_registered():
                 returncode = managed_job_runtime.tail_logs(
