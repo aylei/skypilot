@@ -2302,12 +2302,15 @@ def _check_owner_identity_with_record(cluster_name: str,
     cluster_workspace = record.get('workspace',
                                    constants.SKYPILOT_DEFAULT_WORKSPACE)
     if active_workspace != cluster_workspace:
+        cluster_label = workspaces_core.workspace_label_for_caller(
+            cluster_workspace)
+        active_name = skypilot_config.get_workspace_name(active_workspace)
         with ux_utils.print_exception_no_traceback():
             raise exceptions.ClusterOwnerIdentityMismatchError(
                 f'{colorama.Fore.YELLOW}'
                 f'The cluster {cluster_name!r} is in workspace '
-                f'{cluster_workspace!r}, but the active workspace is '
-                f'{active_workspace!r}.{colorama.Fore.RESET}')
+                f'{cluster_label!r}, but the active workspace is '
+                f'{active_name!r}.{colorama.Fore.RESET}')
 
     launched_resources = handle.launched_resources.assert_launchable()
     cloud = launched_resources.cloud
@@ -4104,8 +4107,8 @@ def get_clusters(
             names.
         all_users: If True, return clusters from all users. If False, only
             return clusters from the current user.
-        include_credentials: If True, include cluster ssh credentials in the
-            return value.
+        include_credentials: If True, include ssh credentials in the records of
+            the clusters the current user owns.
         _include_is_managed: Whether to force include clusters created by the
             controller.
 
@@ -4175,12 +4178,17 @@ def get_clusters(
 
     def _update_records_with_credentials(
             records: List[Optional[Dict[str, Any]]]) -> None:
-        """Add the credentials to the record.
+        """Add the credentials to the records of clusters the caller owns.
 
         This is useful for the client side to setup the ssh config of the
-        cluster.
+        cluster. The credentials carry the cluster owner's SSH private key, so
+        the records of other users' clusters get none.
         """
-        records_with_handle = _get_records_with_handle(records)
+        caller_user_hash = common_utils.get_current_user().id
+        records_with_handle = [
+            record for record in _get_records_with_handle(records)
+            if record['user_hash'] == caller_user_hash
+        ]
         if len(records_with_handle) == 0:
             return
 
