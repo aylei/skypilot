@@ -23,7 +23,7 @@ spec:
         effect: NoExecute
       containers:
       - name: server
-        image: ghcr.io/aylei/fusermount-server:hardening-71bd649f0
+        image: ghcr.io/aylei/fusermount-server:hardening-496d7d9f1
         securityContext:
           privileged: true
         volumeMounts:

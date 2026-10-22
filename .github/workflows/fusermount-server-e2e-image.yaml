@@ -29,4 +29,4 @@ jobs:
           context: ./addons/fuse-proxy
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/fusermount-server:hardening-71bd649f0
+          tags: ghcr.io/${{ github.repository_owner }}/fusermount-server:hardening-496d7d9f1
